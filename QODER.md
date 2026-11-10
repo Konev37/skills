@@ -82,11 +82,12 @@ node scripts/build-qoder-plugin.mjs
 
 它不向上游发起任何 PR 或推送，工作流里也有 `if: github.repository != 'mattpocock/skills'` 兜底。
 
-**需要你做一次的设置**：GitHub 的 `schedule` 触发器只会读取**默认分支**上的工作流文件。本移植全部落在 `qoder-plugin` 分支，`main` 未改动，所以定时任务默认不会触发。三种处理方式任选其一：
+**需要你做一次的设置**：GitHub 规定 `schedule` 触发器只读取**默认分支**上的工作流文件，`workflow_dispatch` 的 **Run workflow** 按钮同样只在默认分支存在该文件时才出现。本移植全部落在 `qoder-plugin` 分支，`main` 未改动，所以两者目前都不会生效。二选一：
 
-- 把 fork 的默认分支改成 `qoder-plugin`（推荐，这个 fork 的用途就是 Qoder 移植版）；
-- 或把该工作流文件也放一份到 `main`，它内部会显式 checkout `qoder-plugin` 分支操作；
-- 或不改任何设置，每次上游发版后在 Actions 页面手动点 **Run workflow**（`workflow_dispatch` 已启用）。
+- 把 fork 的默认分支改成 `qoder-plugin`（推荐，这个 fork 的用途就是 Qoder 移植版，访问者直接看到移植文档）；
+- 或把 `.github/workflows/sync-upstream-qoder.yml` 单独复制一份到 `main`。工作流内部会显式 checkout `qoder-plugin` 分支操作，`main` 的其余内容不受影响。
+
+两个都不做，自动同步就不会跑，只能本地手动执行构建脚本。
 
 分支名与工作流里的 `env.PLUGIN_BRANCH` 一致，改名时同步改这一处即可。
 
