@@ -1,0 +1,126 @@
+name: Sync Upstream Qoder Plugin
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-upstream-qoder
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  # Branch that carries the Qoder port. Scheduled runs always start from the
+  # repository default branch, so the checkout below pins this explicitly.
+  PLUGIN_BRANCH: qoder-plugin
+  UPSTREAM_REPO: mattpocock/skills
+
+jobs:
+  sync:
+    name: Sync latest upstream release tag
+    runs-on: ubuntu-latest
+    # This workflow pushes and tags. Never let it run against upstream itself.
+    if: github.repository != 'mattpocock/skills'
+    steps:
+      - name: Checkout plugin branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PLUGIN_BRANCH }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream release tags only
+        run: |
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          # Tags only. Upstream main is deliberately never fetched or merged.
+          git fetch --no-tags upstream "+refs/tags/v*:refs/tags/v*"
+
+      - name: Resolve latest upstream release tag
+        id: upstream
+        run: |
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          if [ -z "$latest" ]; then
+            echo "::error::No v* release tag found on upstream."
+            exit 1
+          fi
+          echo "tag=$latest" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream release tag: $latest"
+          if git merge-base --is-ancestor "$latest" HEAD; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            echo "Already synced to $latest."
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream release tag
+        if: steps.upstream.outputs.current == 'false'
+        run: |
+          if ! git merge --no-edit "${{ steps.upstream.outputs.tag }}"; then
+            git merge --abort
+            echo "::error::Merging ${{ steps.upstream.outputs.tag }} conflicted. Resolve it locally and push to $PLUGIN_BRANCH."
+            exit 1
+          fi
+
+      - name: Build Qoder plugin
+        run: node scripts/build-qoder-plugin.mjs
+
+      - name: Validate Qoder plugin
+        run: |
+          node scripts/check-qoder-plugin.mjs
+          node scripts/build-qoder-plugin.mjs --check
+
+      - name: Read plugin version
+        id: version
+        run: |
+          version=$(node -p "require('./qoder-plugin/.qoder-plugin/plugin.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        run: |
+          git add qoder-plugin
+          if git diff --cached --quiet; then
+            echo "No plugin changes to commit."
+          else
+            git commit -m "chore(qoder): sync ${{ steps.upstream.outputs.tag }} and rebuild plugin ${{ steps.version.outputs.version }}"
+          fi
+          git push origin "HEAD:$PLUGIN_BRANCH"
+
+      - name: Package and publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          tag="qoder-v$VERSION"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists, nothing to publish."
+            exit 0
+          fi
+          archive="mattpocock-skills-qoder-$VERSION.zip"
+          (cd qoder-plugin && zip -qr "../$archive" . -x '*.DS_Store' '__MACOSX/*')
+          git tag "$tag"
+          git push origin "$tag"
+          gh release create "$tag" "$archive" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$PLUGIN_BRANCH" \
+            --title "Qoder plugin $VERSION" \
+            --notes "Built from $UPSTREAM_REPO release tag $UPSTREAM_TAG.
+
+          Install: download \`$archive\` and import it as a local plugin ZIP in Qoder.
+          The ZIP root contains \`.qoder-plugin/plugin.json\` directly.
+
+          See [QODER.md](https://github.com/$GITHUB_REPOSITORY/blob/$PLUGIN_BRANCH/QODER.md) for both install routes and the manual registration fallback.
+
+          Skills are copied byte-for-byte from upstream's promoted set. MIT licensed, credit Matt Pocock."
