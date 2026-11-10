@@ -20,24 +20,24 @@
 
 ZIP 根目录直接包含 `.qoder-plugin/plugin.json`，Qoder 的安装器会自行完成校验、放置、注册与启用。这条路线不需要你手工改任何配置文件。
 
-### 路线 B：手工注册（无图形界面，或想跟仓库同步）
-
-配置目录按产品区分：Qoder 是 `~/.qoder`，Qoder CN 是 `~/.qoder-cn`。下文用 `<CONFIG>` 指代你实际使用的那个。若环境里设置了 `QODER_CONFIG_DIR` 或 `QODERCN_CONFIG_DIR`，以该值为准。
+### 路线 B：脚本注册（无图形界面，或想跟仓库同步）
 
 ```bash
 git clone -b qoder-plugin https://github.com/Konev37/skills.git
 cd skills
-node scripts/build-qoder-plugin.mjs
-node scripts/check-qoder-plugin.mjs
+node scripts/update-local-qoder-plugin.mjs --dry-run   # 先看会改什么
+node scripts/update-local-qoder-plugin.mjs
 ```
 
-然后把 `qoder-plugin/` 的内容复制到版本化缓存目录，`<version>` 取 `qoder-plugin/.qoder-plugin/plugin.json` 里的 `version`：
+脚本自动解析配置目录（Qoder 是 `~/.qoder`，Qoder CN 是 `~/.qoder-cn`；设了 `QODER_CONFIG_DIR` 或 `QODERCN_CONFIG_DIR` 时以该值为准，两个目录都存在时用 `--config-dir` 指定），构建后写入三处，下文 `<CONFIG>` 指代解析结果，`<version>` 取清单里的 `version`：
 
 ```text
-<CONFIG>/plugins/cache/local/mattpocock-skills/<version>/
+<CONFIG>/plugins/cache/local/mattpocock-skills/<version>/     插件内容
+<CONFIG>/plugins/installed_plugins_v2.json                  plugins["mattpocock-skills@local"]
+<CONFIG>/settings.json                                      enabledPlugins["mattpocock-skills@local"] = true
 ```
 
-在 `<CONFIG>/plugins/installed_plugins_v2.json` 的 `plugins` 对象中**合并**加入一项，保留其余所有条目：
+注册项形如，两个 JSON 都是合并写入，其余条目与 `mcpServers` 不动：
 
 ```json
 "mattpocock-skills@local": [
@@ -49,26 +49,40 @@ node scripts/check-qoder-plugin.mjs
 ]
 ```
 
-在 `<CONFIG>/settings.json` 的 `enabledPlugins` 中**合并**加入：
-
-```json
-"mattpocock-skills@local": true
-```
-
-Windows 上 `installPath` 用双反斜杠或正斜杠。改完重启 Qoder。
+改完重启 Qoder。这条路线与路线 A 二选一，别同时装，否则技能会重复。
 
 ## 更新
 
-路线 A：下载新的 Release ZIP 重新导入。
+分三段，每段各自独立。**`@local` 安装不会自我更新**，Action 只负责把上游变更推到 GitHub，本机和别人的 Qoder 都要各自取一次。
 
-路线 B：
+### 第一段：上游 -> 本仓库（自动）
+
+Action 每天跑一次，只认上游 release tag。想立刻触发：仓库 **Actions** 页面 -> **Sync Upstream Qoder Plugin** -> **Run workflow**。默认分支已是 `qoder-plugin`，所以定时触发和该按钮都可用。
+
+跑完后 `qoder-plugin/` 会是最新构建，版本号变化时还会多一个 `qoder-v<version>` Release 和 ZIP。
+
+### 第二段：本仓库 -> 本机 Qoder（一条命令）
 
 ```bash
 git pull
-node scripts/build-qoder-plugin.mjs
+node scripts/update-local-qoder-plugin.mjs
 ```
 
-版本号变了就复制到一个新的 `<version>` 缓存目录，并同步更新 `installed_plugins_v2.json` 里的 `installPath` 与 `version`。版本号没变则直接覆盖原目录。
+脚本会重新构建、复制到 `<CONFIG>/plugins/cache/local/mattpocock-skills/<version>/`、合并更新 `installed_plugins_v2.json` 的 `installPath` 与 `version`、并确保 `enabledPlugins` 里为 `true`。其余插件条目和 `mcpServers` 原样保留，旧版本缓存目录不删除。完成后重启 Qoder。
+
+先看不改：
+
+```bash
+node scripts/update-local-qoder-plugin.mjs --dry-run
+```
+
+配置目录自动从 `QODER_CONFIG_DIR` / `QODERCN_CONFIG_DIR` 或 `~/.qoder-cn`、`~/.qoder` 解析。两个都存在时用 `--config-dir <path>` 指定。
+
+### 第三段：本仓库 -> 别人的 Qoder
+
+让对方下载 [Releases](https://github.com/Konev37/skills/releases) 里的 `mattpocock-skills-qoder-<version>.zip`，在 Qoder 插件管理界面从本地 ZIP 导入，然后重启。更新就是下载新 ZIP 再导入一次。
+
+对方也可以走第二段：clone 本仓库的 `qoder-plugin` 分支后跑同一个更新脚本。
 
 ## 与上游保持同步
 
@@ -82,12 +96,9 @@ node scripts/build-qoder-plugin.mjs
 
 它不向上游发起任何 PR 或推送，工作流里也有 `if: github.repository != 'mattpocock/skills'` 兜底。
 
-**需要你做一次的设置**：GitHub 规定 `schedule` 触发器只读取**默认分支**上的工作流文件，`workflow_dispatch` 的 **Run workflow** 按钮同样只在默认分支存在该文件时才出现。本移植全部落在 `qoder-plugin` 分支，`main` 未改动，所以两者目前都不会生效。二选一：
+**关于默认分支**：GitHub 规定 `schedule` 触发器只读取**默认分支**上的工作流文件，`workflow_dispatch` 的 **Run workflow** 按钮同样只在默认分支存在该文件时才出现。本 fork 的默认分支已设为 `qoder-plugin`，所以两者都可用。
 
-- 把 fork 的默认分支改成 `qoder-plugin`（推荐，这个 fork 的用途就是 Qoder 移植版，访问者直接看到移植文档）；
-- 或把 `.github/workflows/sync-upstream-qoder.yml` 单独复制一份到 `main`。工作流内部会显式 checkout `qoder-plugin` 分支操作，`main` 的其余内容不受影响。
-
-两个都不做，自动同步就不会跑，只能本地手动执行构建脚本。
+如果你再次 fork 本仓库，记得同样把默认分支指到携带该工作流的分支，否则自动同步不会跑。替代做法是把 `.github/workflows/sync-upstream-qoder.yml` 单独复制一份到默认分支，工作流内部会显式 checkout `env.PLUGIN_BRANCH` 操作。
 
 分支名与工作流里的 `env.PLUGIN_BRANCH` 一致，改名时同步改这一处即可。
 
@@ -136,6 +147,7 @@ Qoder 市场上存在一个第三方移植 `matt-pocock-skills`（注意拼写�
 node scripts/build-qoder-plugin.mjs          # 重新生成 qoder-plugin/
 node scripts/build-qoder-plugin.mjs --check  # 只校验，不写文件，漂移时退出码 1
 node scripts/check-qoder-plugin.mjs          # 静态校验产物是否符合 Qoder 插件规范
+node scripts/update-local-qoder-plugin.mjs   # 构建并安装/更新到本机 Qoder 配置目录
 ```
 
 改动技能请改 `skills/` 下的源文件，不要直接改 `qoder-plugin/`，后者会被下一次构建覆盖。
